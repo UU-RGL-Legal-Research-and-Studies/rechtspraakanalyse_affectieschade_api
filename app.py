@@ -5,12 +5,14 @@ import pandas as pd
 from io import BytesIO
 import tempfile
 from ECLI_affectieschade1 import unique_list
+from ECLI_uitkoopprocedure import unique_list1
 import pickle
 import shutil
 import os
 import time
 
 app = Flask(__name__)
+app.secret_key = 'hello_world'
 
 # # Sample ECLIs
 ECLIs = unique_list #list from other file where ECLIs have been subtracted (using Webparsing)
@@ -19,14 +21,19 @@ ECLI_texts = {} # ECLI_texts[ecli] = {'texts': [], 'current_index': 0}
 ECLI_cache = {}  # Cache for XML roots
 
 def highlight_term(text, term):
-    return text.replace(term, f'<span class="highlight">{term}</span>')
+    #return text.replace(term, f'<span class="highlight">{term}</span>')
+    return text
+
+def get_case_number(ecli):
+    root, zaaknummer = api_request(ecli)
+    return zaaknummer
 
 def api_request(ecli):
     if ecli in ECLI_cache:
         # Laad de XML-root van het tijdelijke bestand
         with open(ECLI_cache[ecli], 'rb') as temp_file:
             root = ET.parse(temp_file).getroot()
-        return root
+        return root, None
 
     # Voer de API-aanvraag uit
     url = f"https://data.rechtspraak.nl/uitspraken/content?id={ecli}"
@@ -43,7 +50,11 @@ def api_request(ecli):
     with open(temp_file.name, 'rb') as temp_file:
         root = ET.parse(temp_file).getroot()
 
-    return root
+    # Extraheer het zaaknummer
+    zaaknummer_elem = root.find(".//psi:zaaknummer", namespaces={"psi": "http://psi.rechtspraak.nl/"})
+    zaaknummer = zaaknummer_elem.text if zaaknummer_elem is not None else "N/A"
+
+    return root, zaaknummer
 
 @app.route('/start_request', methods=['POST'])
 def start_request():
@@ -51,23 +62,28 @@ def start_request():
     time.sleep(5)  # Simulate a long API request
     return '', 200  # Return a success response
 
-
 @app.route('/', methods=['GET', 'POST'])
 def index():
     global ECLI_texts  # Declare ECLI_texts as global
 
-    search_results_count = 0  # Initialize search results count
+    # Bepaal de geselecteerde database op basis van de sessie-variabele
+    selected_db = session.get('selected_db', 'db1')
+    if selected_db == 'db1':
+        active_ECLIs = unique_list
+    else:
+        active_ECLIs = unique_list1
+
+    ECLI_data = {}  # Store both texts and case numbers
+    total_search_results = 0  # Initialize search results count
 
     if request.method == 'POST':
         # Verkrijg ruwe zoektermen van de gebruiker
         raw_search_terms = request.form.get('search_terms').split(',')
-        # Verwerk de ruwe zoektermen om een lijst van lijsten te maken,
-        # waar elke lijst synoniemen bevat die door de gebruiker zijn ingevoerd
+        # Verwerk de ruwe zoektermen
         search_terms = [term.split('|') for term in raw_search_terms]
-        
-        ECLI_texts = {}
-        for ecli in ECLIs:
-            root = api_request(ecli)
+
+        for ecli in active_ECLIs:  # Gebruik de actieve ECLIs op basis van de geselecteerde database
+            root, zaaknummer = api_request(ecli)  # Get the XML root and the case number
             # Verzamel alle teksten die voldoen aan de zoekcriteria
             texts = [elem.text for elem in root.iter() if elem.text and all(
                 any(synonym.lower() in elem.text.lower() for synonym in term)
@@ -80,20 +96,33 @@ def index():
                     for synonym in term_group:
                         text = highlight_term(text, synonym)
                 highlighted_texts.append(text)
-            ECLI_texts[ecli] = {'texts': highlighted_texts, 'current_index': 0}
-            search_results_count += len(highlighted_texts)  # Update search results count
+            ECLI_data[ecli] = {
+                'texts': highlighted_texts if highlighted_texts else ['No result'],
+                'current_index': 0,
+                'zaaknummer': zaaknummer  # Store the case number
+            }
+            total_search_results += len(highlighted_texts)  # Update search results count
+    return render_template('index.html', ECLI_texts=ECLI_data, search_results_count=total_search_results, selected_db=selected_db)
 
-    return render_template('index.html', ECLI_texts=ECLI_texts, search_results_count=search_results_count)
+@app.route('/switch_db/<string:db_name>')
+def switch_db(db_name):
+    if db_name in ['db1', 'db2']:
+        session['selected_db'] = db_name
+    return redirect(url_for('index'))
 
 def update_excel_file():
-    df = pd.DataFrame([(ecli, texts['texts'][ECLI_texts[ecli]['current_index']] if texts['texts'] else 'none') 
-                       for ecli, texts in ECLI_texts.items()], columns=['ECLI', 'Result'])
+    data = []
+    for ecli, texts in ECLI_texts.items():
+        row = (ecli, texts['zaaknummer'], texts['texts'][texts['current_index']] if texts['texts'] else 'none')
+        data.append(row)
+    df = pd.DataFrame(data, columns=['ECLI', 'Case Number', 'Result'])
 
     with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
         df.to_excel(temp_file, index=False)
 
     session['temp_excel_file'] = temp_file.name
     session.modified = True
+
 
 # Voeg ergens in je code een functie toe om het 'vorige' en 'volgende' element te krijgen
 def get_sibling_elements(ecli, index):
