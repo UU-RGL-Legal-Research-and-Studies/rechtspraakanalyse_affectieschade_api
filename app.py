@@ -52,7 +52,7 @@ def api_request(ecli):
         ECLI_cache[ecli] = temp_file_name  # Store the file name in the cache
         with open(temp_file_name, 'rb') as file:
             root = ET.parse(file).getroot()
-        time.sleep(3)  # Add a 3-second pause to prevent API overload
+        time.sleep(1)  # Add a 1-second pause to prevent API overload
 
     # Look for the dcterms:identifier tags and retrieve the identifier link
     identifier_link = None
