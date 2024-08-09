@@ -36,7 +36,7 @@ def api_request(ecli):
     }
 
     # Check if the ECLI is already cached
-    if ecli in ECLI_cache:
+    if (ecli in ECLI_cache):
         # If it is, retrieve the XML data from the cache
         temp_file_name = ECLI_cache[ecli]
         with open(temp_file_name, 'rb') as file:
@@ -63,16 +63,14 @@ def api_request(ecli):
 
     date_link = None
     for date_tag in root.findall('.//rdf:Description/dcterms:issued', namespaces):
-        date_link = date_tag.text
-        for date_tag in root.findall('.//rdf:Description/dcterms:issued', namespaces):
-            if date_tag.text:
-                try:
-                    date_link = datetime.strptime(date_tag.text, '%Y-%m-%d').date()
-                except ValueError:
+        if date_tag.text:
+            try:
+                date_link = datetime.strptime(date_tag.text, '%Y-%m-%d').date()
+            except ValueError:
                 # Voeg hier logica toe voor als de datum niet correct is of het formaat niet klopt
-                    date_link = None
+                date_link = None
 
-    return root, identifier_link, date_link  # Return the XML root and identifier link
+    return root, identifier_link, date_link  # Return the XML root, identifier link, and date link
 
 # Define a route for the main page ("/") of the web application
 @app.route('/', methods=['GET', 'POST'])
@@ -99,11 +97,11 @@ def index():
                     for synonym in term_group:
                         text = highlight_term(text, synonym)  # Highlight the search terms in the text
                 highlighted_texts.append(text)
-            ECLI_texts[ecli] = {'texts': highlighted_texts, 'identifier_link': identifier_link, 'current_index': 0, 'date_link':date_link}
+            ECLI_texts[ecli] = {'texts': highlighted_texts, 'identifier_link': identifier_link, 'current_index': 0, 'date_link': date_link}
             search_results_count += len(highlighted_texts)  # Update the number of search results
 
         # Update the Excel file
-        update_excel_file() 
+        update_excel_file()
 
         # Sla de scrollpositie op in de sessie
         session['scrollPosition'] = request.form.get('scrollPosition', 0)
@@ -114,9 +112,9 @@ def index():
     # Voor een GET-verzoek
     scroll_position = session.get('scrollPosition', 0)
 
-    #Sort ECLI_text op datum
-    sorted_ECLI_texts = dict(sorted(ECLI_texts.items(), key=lambda item: item[1]['date_link'], reverse=True))
-    
+    # Sort ECLI_text op datum, waarbij None-waarden worden behandeld
+    sorted_ECLI_texts = dict(sorted(ECLI_texts.items(), key=lambda item: (item[1]['date_link'] is None, item[1]['date_link']), reverse=True))
+
     return render_template('index.html', ECLI_texts=sorted_ECLI_texts, search_results_count=search_results_count, scroll_position=scroll_position)
 
 # Define a function to remove HTML tags from a string
