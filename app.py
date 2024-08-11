@@ -81,6 +81,9 @@ def api_request(ecli):
 # Define a route for the main page ("/") of the web application
 @app.route('/', methods=['GET', 'POST'])
 def index():
+    # Initialize the database (only the first time this function is called)
+    db.create_all()
+
     global ECLI_texts  # Indicate that ECLI_texts should be treated as a global variable
     search_results_count = 0  # Initialize the number of search results
 
@@ -159,11 +162,6 @@ def download_excel():
         )
     else:
         return "No Excel file generated", 404
-
-# Ensure the database is created before the first request
-@app.before_first_request
-def initialize_database():
-    db.create_all()
 
 # Start the Flask application if the script is run directly
 if __name__ == '__main__':
