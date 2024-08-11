@@ -26,9 +26,6 @@ class ECLIEntry(db.Model):
     identifier_link = db.Column(db.String)
     date_link = db.Column(db.Date)
 
-# Initialize the database
-db.create_all()
-
 # Define and initialize some variables and data structures
 ECLIs = unique_list  # A list of ECLIs retrieved from the other file
 ECLIs.sort(reverse=True)  # Sort the ECLIs in reverse order
@@ -162,6 +159,11 @@ def download_excel():
         )
     else:
         return "No Excel file generated", 404
+
+# Ensure the database is created before the first request
+@app.before_first_request
+def initialize_database():
+    db.create_all()
 
 # Start the Flask application if the script is run directly
 if __name__ == '__main__':
