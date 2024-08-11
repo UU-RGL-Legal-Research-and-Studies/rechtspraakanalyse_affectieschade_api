@@ -1,4 +1,3 @@
-# Import required modules and libraries
 from flask import Flask, render_template, request, send_file, session, redirect, url_for
 import requests
 import xml.etree.ElementTree as ET
@@ -6,22 +5,34 @@ import pandas as pd
 from io import BytesIO
 import tempfile
 from ECLI_affectieschade1 import unique_list  # Import a 'unique_list' function from another file
-import pickle
-import shutil
-import os
-import time
 import re
 from datetime import datetime
+from flask_sqlalchemy import SQLAlchemy
 
 # Create a Flask application and set a secret key for sessions
 app = Flask(__name__)
 app.secret_key = 'hello_world'
 
+# Configure SQLAlchemy with a SQLite database
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ecli_cache.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+# Define a database model for storing ECLI data
+class ECLIEntry(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    ecli = db.Column(db.String, unique=True, nullable=False)
+    xml_content = db.Column(db.Text, nullable=False)
+    identifier_link = db.Column(db.String)
+    date_link = db.Column(db.Date)
+
+# Initialize the database
+db.create_all()
+
 # Define and initialize some variables and data structures
 ECLIs = unique_list  # A list of ECLIs retrieved from the other file
 ECLIs.sort(reverse=True)  # Sort the ECLIs in reverse order
 ECLI_texts = {}  # An empty dictionary to store text data for each ECLI
-ECLI_cache = {}  # A cache for storing XML files of ECLIs
 
 # Define a function to highlight search terms in text
 def highlight_term(text, term):
@@ -35,40 +46,38 @@ def api_request(ecli):
         'dcterms': "http://purl.org/dc/terms/",
     }
 
-    # Check if the ECLI is already cached
-    if (ecli in ECLI_cache):
-        # If it is, retrieve the XML data from the cache
-        temp_file_name = ECLI_cache[ecli]
-        with open(temp_file_name, 'rb') as file:
-            root = ET.parse(file).getroot()
+    # Check if the ECLI is already in the database
+    entry = ECLIEntry.query.filter_by(ecli=ecli).first()
+    if entry:
+        # If it is, retrieve the XML data from the database
+        root = ET.fromstring(entry.xml_content)
+        identifier_link = entry.identifier_link
+        date_link = entry.date_link
     else:
-        # If the ECLI is not in the cache, fetch it via the API and save the XML in the cache
+        # If the ECLI is not in the database, fetch it via the API and save it in the database
         url = f"https://data.rechtspraak.nl/uitspraken/content?id={ecli}"
         response = requests.get(url, stream=True)
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xml') as temp_file:
-            shutil.copyfileobj(response.raw, temp_file)
-            temp_file_name = temp_file.name
+        root = ET.fromstring(response.content)
 
-        ECLI_cache[ecli] = temp_file_name  # Store the file name in the cache
-        with open(temp_file_name, 'rb') as file:
-            root = ET.parse(file).getroot()
-        time.sleep(1)  # Add a 1-second pause to prevent API overload
+        # Look for the dcterms:identifier tags and retrieve the identifier link
+        identifier_link = None
+        for identifier_tag in root.findall('.//rdf:Description/dcterms:identifier', namespaces):
+            if identifier_tag.text and identifier_tag.text.startswith('http'):
+                identifier_link = identifier_tag.text
+                break
 
-    # Look for the dcterms:identifier tags and retrieve the identifier link
-    identifier_link = None
-    for identifier_tag in root.findall('.//rdf:Description/dcterms:identifier', namespaces):
-        if identifier_tag.text and identifier_tag.text.startswith('http'):
-            identifier_link = identifier_tag.text
-            break
+        date_link = None
+        for date_tag in root.findall('.//rdf:Description/dcterms:issued', namespaces):
+            if date_tag.text:
+                try:
+                    date_link = datetime.strptime(date_tag.text, '%Y-%m-%d').date()
+                except ValueError:
+                    date_link = None
 
-    date_link = None
-    for date_tag in root.findall('.//rdf:Description/dcterms:issued', namespaces):
-        if date_tag.text:
-            try:
-                date_link = datetime.strptime(date_tag.text, '%Y-%m-%d').date()
-            except ValueError:
-                # Voeg hier logica toe voor als de datum niet correct is of het formaat niet klopt
-                date_link = None
+        # Store the XML content and other data in the database
+        new_entry = ECLIEntry(ecli=ecli, xml_content=ET.tostring(root, encoding='unicode'), identifier_link=identifier_link, date_link=date_link)
+        db.session.add(new_entry)
+        db.session.commit()
 
     return root, identifier_link, date_link  # Return the XML root, identifier link, and date link
 
@@ -139,39 +148,6 @@ def update_excel_file():
 
     session['temp_excel_file'] = temp_file.name  # Save the path to the Excel file in the session
     session.modified = True
-
-# Define a function to get previous and next elements for a specific ECLI
-def get_sibling_elements(ecli, index):
-    root = api_request(ecli)
-    current_elem = root.find(f".//*[@index='{index}']")
-    prev_elem = current_elem.getprevious() if current_elem is not None else None
-    next_elem = current_elem.getnext() if current_elem is not None else None
-    return prev_elem, next_elem
-
-# Define a route for the previous element ("/previous/<ecli>") of an ECLI
-@app.route('/previous/<ecli>', methods=['GET'])
-def previous(ecli):
-    if ecli in ECLI_texts:
-        ECLI_texts[ecli]['current_index'] = max(0, ECLI_texts[ecli]['current_index'] - 1)
-    update_excel_file()  # Update the Excel file
-    return redirect(url_for('index'))
-
-# Define a route for the next element ("/next/<ecli>") of an ECLI
-@app.route('/next/<ecli>', methods=['GET'])
-def next(ecli):
-    if ecli in ECLI_texts:
-        ECLI_texts[ecli]['current_index'] = min(len(ECLI_texts[ecli]['texts']) - 1, ECLI_texts[ecli]['current_index'] + 1)
-    update_excel_file()  # Update the Excel file
-    return redirect(url_for('index'))
-
-# Define a route for deleting an element ("/delete/<ecli>") of an ECLI
-@app.route('/delete/<ecli>', methods=['GET'])
-def delete(ecli):
-    if ecli in ECLI_texts:
-        del ECLI_texts[ecli]['texts'][ECLI_texts[ecli]['current_index']]
-        ECLI_texts[ecli]['texts'] = [text for text in ECLI_texts[ecli]['texts'] if text]  # Remove empty strings
-    update_excel_file()  # Update the Excel file
-    return redirect(url_for('index'))
 
 # Define a route to download the Excel file ("/download/excel")
 @app.route('/download/excel', methods=['GET'])
